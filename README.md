@@ -66,10 +66,10 @@ Extensions present in instr_dict.json but not in manual:
 zabha_zacas, zibi, c_d ...
 
 Extensions mentioned in manual but not in instr_dict.json:
-zb, some, sign ...
+smcsrind, sscsrind, zicntr, sv32, sv39 ...
 
 Count Summary:
-58 matched, 27 in JSON only, 323 in manual only
+55 matched, 30 in JSON only, 155 in manual only
 
 --- Tier 3: Graph Generation ---
 Generated text-based graph showing extensions that share instructions: .../shared_instructions.dot
