@@ -5,7 +5,8 @@ const { execSync } = require('child_process');
 // Configuration
 const REPO_URL = 'https://github.com/riscv/riscv-isa-manual.git';
 const MANUAL_DIR = path.join(__dirname, 'riscv-isa-manual');
-const INSTR_DICT_PATH = path.join(__dirname, '..', 'src', 'instr_dict.json');
+// Allow passing the JSON path as a CLI argument, fallback to default
+const INSTR_DICT_PATH = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, '..', 'src', 'instr_dict.json');
 
 // Normalizes extension names for consistent comparison
 // e.g. rv64_zba -> zba, rv_i -> i, Zba -> zba
@@ -18,11 +19,17 @@ function normalizeExtensionName(ext) {
 function runTier1() {
   console.log('--- Tier 1: Instruction Set Parsing ---');
   if (!fs.existsSync(INSTR_DICT_PATH)) {
-    console.error(`Error: Could not find ${INSTR_DICT_PATH}`);
+    console.error(`Error: Could not find ${INSTR_DICT_PATH}. Please provide a valid path as a command-line argument.`);
     process.exit(1);
   }
 
-  const data = JSON.parse(fs.readFileSync(INSTR_DICT_PATH, 'utf8'));
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(INSTR_DICT_PATH, 'utf8'));
+  } catch (error) {
+    console.error(`Error parsing JSON file at ${INSTR_DICT_PATH}:`, error.message);
+    process.exit(1);
+  }
   
   const extensionsMap = new Map();
   const multipleExtensionsInstructions = [];
@@ -92,7 +99,12 @@ function runTier2(jsonExtensionsMap) {
   
   if (!fs.existsSync(MANUAL_DIR)) {
     console.log(`Cloning RISC-V ISA manual to ${MANUAL_DIR}...`);
-    execSync(`git clone ${REPO_URL} ${MANUAL_DIR}`, { stdio: 'inherit' });
+    try {
+      execSync(`git clone ${REPO_URL} ${MANUAL_DIR}`, { stdio: 'inherit' });
+    } catch (error) {
+      console.error(`Error cloning repository: ${error.message}`);
+      process.exit(1);
+    }
   } else {
     console.log('ISA manual repository already exists locally. Skipping clone.');
   }
@@ -100,15 +112,27 @@ function runTier2(jsonExtensionsMap) {
   const srcDir = path.join(MANUAL_DIR, 'src');
   const adocFiles = getAdocFiles(srcDir);
   
-  // This is a naive regex to find potential extension names mentioned in the text
-  // e.g., 'Zba', 'M', 'F', 'Zicsr', 'RV32I'
-  // We'll look for standard single letter extensions or Z/S prefixed extensions
+  // We use a regular expression to identify potential extension names in the AsciiDoc text.
+  // Standard single letter extensions: I, M, A, F, D, Q, C, V, H
+  // Multi-letter extensions starting with Z or S: Zba, Svnapot
+  // Full ISA string patterns: RV32I, RV64GC
   const extensionRegex = /\b([IMAFDQCVH]|Z[a-z0-9]+|S[a-z0-9]+|RV[32|64]?[A-Z]+)\b/g;
   
+  // A blocklist to filter out common capitalized English words that get caught by the naive regex
+  // since standard sentences might start with words like "Some" or "Sign"
+  const falsePositives = new Set(['some', 'sign', 'such', 'single', 'see', 'synopsis', 'should', 'set', 'software', 'shift', 'zero', 'scott', 'shaked', 'stefan', 'saarinen', 'susmit', 'sarkar', 'scheid', 'schmidt', 'size', 'subsequent', 'state', 'standard']);
+
   const manualExtensions = new Set();
   
   for (const file of adocFiles) {
-    const content = fs.readFileSync(file, 'utf8');
+    let content;
+    try {
+      content = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+      console.warn(`Warning: Could not read file ${file}`);
+      continue;
+    }
+
     let match;
     while ((match = extensionRegex.exec(content)) !== null) {
       let ext = match[1];
@@ -116,10 +140,12 @@ function runTier2(jsonExtensionsMap) {
           // RV32I -> I, RV64G -> G, etc. This is very simplified.
           ext = ext.replace(/^RV(32|64)?/, '');
           for(const char of ext) {
-             manualExtensions.add(normalizeExtensionName(char));
+             const norm = normalizeExtensionName(char);
+             if (!falsePositives.has(norm)) manualExtensions.add(norm);
           }
       } else {
-          manualExtensions.add(normalizeExtensionName(ext));
+          const norm = normalizeExtensionName(ext);
+          if (!falsePositives.has(norm)) manualExtensions.add(norm);
       }
     }
   }

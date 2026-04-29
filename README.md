@@ -28,6 +28,12 @@ node explorer.js
 ```
 *Note: The first run may take a few seconds longer as it clones the official RISC-V ISA Manual repository.*
 
+**Custom JSON Path (Optional)**
+You can optionally pass a custom path to your `instr_dict.json` file as a command-line argument. If omitted, the script defaults to looking in `../src/instr_dict.json`.
+```bash
+node explorer.js /path/to/your/custom_instr_dict.json
+```
+
 ### Output Graph
 The script will output a `shared_instructions.dot` file in this directory. 
 You can view it using Graphviz tools:
@@ -72,5 +78,6 @@ Generated text-based graph showing extensions that share instructions: .../share
 
 ## Design Decisions and Assumptions
 - **Normalization Strategy**: Extension naming varies wildly. `rv32_zba` or `rv64_i` is used in `instr_dict.json`, while AsciiDoc might mention `Zba` or `M`. The `normalizeExtensionName` function lowercases everything and strips the `rv32_`, `rv64_`, and `rv_` prefixes to provide a common base name for accurate cross-referencing.
-- **Regex Parsing**: Scanning AsciiDoc text uses a regular expression `\b([IMAFDQCVH]|Z[a-z0-9]+|S[a-z0-9]+|RV[32|64]?[A-Z]+)\b` to identify typical extension names. This captures standard single-letter extensions (I, M, A, etc.) and Z/S extensions. It handles things like `RV32I` by stripping the `RV32` and looking at the remaining `I`.
+- **Regex Parsing & Filtering**: Scanning AsciiDoc text uses a regular expression `\b([IMAFDQCVH]|Z[a-z0-9]+|S[a-z0-9]+|RV[32|64]?[A-Z]+)\b` to identify typical extension names. To prevent the script from accidentally identifying regular English words that start with 'S' or 'Z' (like "Some" or "Sign") as extensions, a blocklist is utilized to filter out common false positives.
+- **Error Handling**: The codebase wraps external commands (like `git clone`) and file operations in `try...catch` blocks to gracefully handle missing files or network interruptions, ensuring the program provides clear error messages rather than crashing.
 - **Graph Output**: We use a `graphviz` dot file format because it is lightweight, textual, and widely supported.
