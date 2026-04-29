@@ -21,6 +21,7 @@ function runTier1() {
   if (!fs.existsSync(INSTR_DICT_PATH)) {
     console.error(`Error: Could not find ${INSTR_DICT_PATH}. Please provide a valid path as a command-line argument.`);
     process.exit(1);
+    return { extensionsMap: new Map(), multipleExtensionsInstructions: [], data: {} };
   }
 
   let data;
@@ -29,6 +30,7 @@ function runTier1() {
   } catch (error) {
     console.error(`Error parsing JSON file at ${INSTR_DICT_PATH}:`, error.message);
     process.exit(1);
+    return { extensionsMap: new Map(), multipleExtensionsInstructions: [], data: {} };
   }
   
   const extensionsMap = new Map();
@@ -112,15 +114,60 @@ function runTier2(jsonExtensionsMap) {
   const srcDir = path.join(MANUAL_DIR, 'src');
   const adocFiles = getAdocFiles(srcDir);
   
-  // We use a regular expression to identify potential extension names in the AsciiDoc text.
-  // Standard single letter extensions: I, M, A, F, D, Q, C, V, H
-  // Multi-letter extensions starting with Z or S: Zba, Svnapot
-  // Full ISA string patterns: RV32I, RV64GC
-  const extensionRegex = /\b([IMAFDQCVH]|Z[a-z0-9]+|S[a-z0-9]+|RV[32|64]?[A-Z]+)\b/g;
-  
-  // A blocklist to filter out common capitalized English words that get caught by the naive regex
-  // since standard sentences might start with words like "Some" or "Sign"
-  const falsePositives = new Set(['some', 'sign', 'such', 'single', 'see', 'synopsis', 'should', 'set', 'software', 'shift', 'zero', 'scott', 'shaked', 'stefan', 'saarinen', 'susmit', 'sarkar', 'scheid', 'schmidt', 'size', 'subsequent', 'state', 'standard']);
+  // --- Extension Detection Strategy ---
+  // We use TWO separate regex strategies to minimize false positives:
+  //
+  // 1. Multi-letter extensions (Z*/S* prefixed, e.g. Zba, Svnapot) are unambiguous
+  //    in text, so we match them broadly with a simple word-boundary regex.
+  //
+  // 2. Single-letter extensions (I, M, A, F, D, Q, C, V, H) are extremely common
+  //    English letters. Matching them naively produces hundreds of false positives.
+  //    Instead, we require them to appear in ISA-specific context, such as:
+  //      - "the M extension", "M extension", "M-extension"
+  //      - Inside an RV string like "RV32IMAFD"
+  //      - Adjacent to another extension reference like "I/M/A"
+
+  // Regex 1: Multi-letter extensions — safe to match broadly
+  // Z-extensions: Any word starting with Z followed by lowercase (e.g. Zba, Zicsr, Zvbb)
+  // S-extensions: Only match known RISC-V supervisor prefixes (Sv, Sm, Ss, Sh, Sn, Sd, Sp, St)
+  //   to avoid catching English words like "Some", "Support", or author names like "Sewell"
+  const multiLetterRegex = /\b(Z[a-z][a-z0-9]*|S[vmshndpt][a-z0-9]+)\b/g;
+
+  // Regex 2: Single-letter extensions — only when in ISA context
+  // Matches patterns like "the M extension", "M-extension", "M Extension"
+  const singleLetterContextRegex = /\b([IMAFDQCVH])[\s-](?:extension|Extension)/g;
+
+  // Regex 3: Full ISA strings like RV32I, RV64IMAFD, RV32GC
+  const rvStringRegex = /\bRV(?:32|64)?([IMAFDQCVHG]+)\b/g;
+
+  // A blocklist to filter out common words and author names that get caught by the S/Z-prefix regex.
+  // The ISA manual AsciiDoc contains many author surnames (Sewell, Shanbhogue, Zhang, etc.)
+  // and standard English words that start with S or Z, none of which are RISC-V extensions.
+  const falsePositives = new Set([
+    // Common English words starting with S or Z
+    'some', 'sign', 'such', 'single', 'see', 'synopsis', 'should', 'set',
+    'software', 'shift', 'zero', 'size', 'subsequent', 'state', 'standard',
+    'section', 'since', 'store', 'stores', 'special', 'source', 'stack',
+    'step', 'same', 'so', 'sp', 'support', 'spike', 'specific', 'similarly',
+    'sensitivity', 'supervisor', 'su', 'ss', 'sv', 'sh', 'sm', 'specify',
+    'shall', 'shown', 'system', 'systems', 'space', 'second', 'string',
+    'subject', 'still', 'status', 'struct', 'structure', 'save', 'saved',
+    'sub', 'summary', 'subset', 'synchronous', 'specification', 'shadow',
+    'seed', 'setup', 'specifications', 'stage', 'setting', 'sret',
+    'supplied', 'sbi', 'sharing', 'separate', 'separated', 'separates',
+    'slot', 'slots', 'sample', 'sb', 'split', 'sn', 'selected', 'sr',
+    'stable', 'starts', 'starting', 'stop', 'stopped', 'stopping',
+    'supported', 'signed', 'short', 'shorter', 'simple', 'simplify',
+    'switched', 'switching', 'swap', 'sd', 'se', 'sf', 'sg', 'si', 'sj',
+    'sk', 'sl', 'sq', 'st', 'sw', 'sx', 'sy', 'sz',
+    'zb', 'zc', 'zd', 'ze', 'zf', 'zg', 'zh', 'zi', 'zj', 'zk', 'zl',
+    'zm', 'zn', 'zo', 'zp', 'zq', 'zr', 'zs', 'zt', 'zu', 'zv', 'zw',
+    'zx', 'zy', 'zz',
+    // Author surnames from the ISA manual contributors
+    'scott', 'shaked', 'stefan', 'saarinen', 'susmit', 'sarkar', 'scheid',
+    'schmidt', 'sewell', 'shanbhogue', 'spinney', 'sweeney', 'steve',
+    'sizhuo', 'zhang', 'zabrocki', 'zandijk'
+  ]);
 
   const manualExtensions = new Set();
   
@@ -134,18 +181,22 @@ function runTier2(jsonExtensionsMap) {
     }
 
     let match;
-    while ((match = extensionRegex.exec(content)) !== null) {
-      let ext = match[1];
-      if (ext.startsWith('RV')) {
-          // RV32I -> I, RV64G -> G, etc. This is very simplified.
-          ext = ext.replace(/^RV(32|64)?/, '');
-          for(const char of ext) {
-             const norm = normalizeExtensionName(char);
-             if (!falsePositives.has(norm)) manualExtensions.add(norm);
-          }
-      } else {
-          const norm = normalizeExtensionName(ext);
-          if (!falsePositives.has(norm)) manualExtensions.add(norm);
+
+    // Pass 1: Multi-letter Z/S extensions (e.g. Zba, Svnapot, Zicsr)
+    while ((match = multiLetterRegex.exec(content)) !== null) {
+      const norm = normalizeExtensionName(match[1]);
+      if (!falsePositives.has(norm)) manualExtensions.add(norm);
+    }
+
+    // Pass 2: Single-letter extensions only when followed by "extension" (e.g. "M extension")
+    while ((match = singleLetterContextRegex.exec(content)) !== null) {
+      manualExtensions.add(normalizeExtensionName(match[1]));
+    }
+
+    // Pass 3: Full RV strings (e.g. RV32IMAFD -> I, M, A, F, D)
+    while ((match = rvStringRegex.exec(content)) !== null) {
+      for (const char of match[1]) {
+        manualExtensions.add(normalizeExtensionName(char));
       }
     }
   }
